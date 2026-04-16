@@ -256,5 +256,3 @@ For questions or authorized testing inquiries, open an issue on GitHub.
 ```
 
 ---
-
-Save this as `README.md` in your project root. It provides everything a user (or future you) needs to understand, install, and operate the tool safely and effectively.
