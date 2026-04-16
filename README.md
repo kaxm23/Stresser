@@ -36,7 +36,7 @@ Stresser is a modular, high‑performance network stress testing framework writt
 
 ### 1. Clone the Repository
 ```bash
-git clone https://github.com/yourusername/stresser.git
+git clone https://github.com/kaxm23/stresser.git
 cd stresser
 ```
 
