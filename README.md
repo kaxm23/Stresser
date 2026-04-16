@@ -253,6 +253,4 @@ For questions or authorized testing inquiries, open an issue on GitHub.
 ---
 
 **Stay ethical. Test responsibly.**
-```
 
----
