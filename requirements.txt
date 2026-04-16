@@ -1,0 +1,5 @@
+requests[socks]>=2.31.0
+httpx[http2]>=0.25.0
+curl_cffi>=0.5.10
+aiohttp>=3.9.0
+aioquic>=0.9.21   # For QUIC/HTTP3
