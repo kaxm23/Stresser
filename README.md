@@ -1,8 +1,7 @@
-Here's a complete **README.md** for your stress testing tool. It covers installation, usage examples, available attack methods, proxy configuration, Tor circuit rotation, and important legal disclaimers.
 
----
 
-```
+
+
 # ⚡ Stresser – Advanced Network Stress Testing Tool
 
 Stresser is a modular, high‑performance network stress testing framework written in Python. It supports multiple attack vectors including volumetric UDP floods, HTTP/HTTPS floods (sync & async), slowloris‑style connection exhaustion, and proxy rotation with Tor circuit switching.
