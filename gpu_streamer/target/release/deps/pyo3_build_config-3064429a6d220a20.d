@@ -1,0 +1,14 @@
+/home/kaxm/project/stresser/gpu_streamer/target/release/deps/pyo3_build_config-3064429a6d220a20.d: /home/kaxm/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.21.2/src/lib.rs /home/kaxm/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.21.2/src/errors.rs /home/kaxm/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.21.2/src/impl_.rs /home/kaxm/project/stresser/gpu_streamer/target/release/build/pyo3-build-config-b95c1f24bb628492/out/pyo3-build-config-file.txt /home/kaxm/project/stresser/gpu_streamer/target/release/build/pyo3-build-config-b95c1f24bb628492/out/pyo3-build-config.txt
+
+/home/kaxm/project/stresser/gpu_streamer/target/release/deps/libpyo3_build_config-3064429a6d220a20.rlib: /home/kaxm/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.21.2/src/lib.rs /home/kaxm/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.21.2/src/errors.rs /home/kaxm/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.21.2/src/impl_.rs /home/kaxm/project/stresser/gpu_streamer/target/release/build/pyo3-build-config-b95c1f24bb628492/out/pyo3-build-config-file.txt /home/kaxm/project/stresser/gpu_streamer/target/release/build/pyo3-build-config-b95c1f24bb628492/out/pyo3-build-config.txt
+
+/home/kaxm/project/stresser/gpu_streamer/target/release/deps/libpyo3_build_config-3064429a6d220a20.rmeta: /home/kaxm/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.21.2/src/lib.rs /home/kaxm/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.21.2/src/errors.rs /home/kaxm/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.21.2/src/impl_.rs /home/kaxm/project/stresser/gpu_streamer/target/release/build/pyo3-build-config-b95c1f24bb628492/out/pyo3-build-config-file.txt /home/kaxm/project/stresser/gpu_streamer/target/release/build/pyo3-build-config-b95c1f24bb628492/out/pyo3-build-config.txt
+
+/home/kaxm/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.21.2/src/lib.rs:
+/home/kaxm/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.21.2/src/errors.rs:
+/home/kaxm/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.21.2/src/impl_.rs:
+/home/kaxm/project/stresser/gpu_streamer/target/release/build/pyo3-build-config-b95c1f24bb628492/out/pyo3-build-config-file.txt:
+/home/kaxm/project/stresser/gpu_streamer/target/release/build/pyo3-build-config-b95c1f24bb628492/out/pyo3-build-config.txt:
+
+# env-dep:CARGO_PKG_VERSION=0.21.2
+# env-dep:OUT_DIR=/home/kaxm/project/stresser/gpu_streamer/target/release/build/pyo3-build-config-b95c1f24bb628492/out
