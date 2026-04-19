@@ -1,7 +1,6 @@
 import sys
 import os
 
-# Add the path to the compiled Rust library
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'gpu_streamer/target/release'))
 
 import gpu_streamer
