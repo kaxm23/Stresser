@@ -1,0 +1,1750 @@
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation.
+ * Copyright(c) 2014 6WIND S.A.
+ */
+
+#include <stdio.h>
+
+#include "test.h"
+
+#include <string.h>
+#include <stdarg.h>
+
+#ifdef RTE_EXEC_ENV_WINDOWS
+static int
+test_missing_c_flag(void)
+{
+	printf("missing_c_flag not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+static int
+test_main_lcore_flag(void)
+{
+	printf("main_lcore_flag not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+static int
+test_invalid_n_flag(void)
+{
+	printf("invalid_n_flag not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+static int
+test_no_hpet_flag(void)
+{
+	printf("no_hpet_flag not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+static int
+test_no_huge_flag(void)
+{
+	printf("no_huge_flag not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+static int
+test_allow_flag(void)
+{
+	printf("allow_flag not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+static int
+test_invalid_b_flag(void)
+{
+	printf("invalid_b_flag not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+static int
+test_invalid_vdev_flag(void)
+{
+	printf("invalid_vdev_flag not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+static int
+test_invalid_r_flag(void)
+{
+	printf("invalid_r_flag not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+static int
+test_memory_flags(void)
+{
+	printf("memory_flags not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+static int
+test_file_prefix(void)
+{
+	printf("file_prefix not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+static int
+test_misc_flags(void)
+{
+	printf("misc_flags not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+#else
+
+#include <libgen.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <unistd.h>
+#include <dirent.h>
+#include <sys/file.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <limits.h>
+#include <fcntl.h>
+
+#include <rte_lcore.h>
+#include <rte_debug.h>
+#include <rte_string_fns.h>
+
+#include "process.h"
+
+#define DEFAULT_MEM_SIZE "18"
+#define mp_flag "--proc-type=secondary"
+#define no_hpet "--no-hpet"
+#define no_huge "--no-huge"
+#define no_shconf "--no-shconf"
+#define auto_probing "--auto-probing"
+#define no_auto_probing "--no-auto-probing"
+#define allow "--allow"
+#define vdev "--vdev"
+#define no_pci "--no-pci"
+#define eal_debug_logs "--log-level=lib.eal:debug"
+#define bus_debug_logs "--log-level=bus.*:debug"
+
+#define FS_HUGETLB "hugetlbfs"
+
+#define memtest "memtest"
+#define memtest1 "memtest1"
+#define memtest2 "memtest2"
+#define SOCKET_MEM_STRLEN (RTE_MAX_NUMA_NODES * 20)
+#define launch_proc(ARGV) process_dup(ARGV, RTE_DIM(ARGV), __func__)
+
+#ifdef RTE_EXEC_ENV_LINUX
+#include <mntent.h>
+
+enum hugepage_action {
+	HUGEPAGE_CHECK_EXISTS = 0,
+	HUGEPAGE_CHECK_LOCKED,
+	HUGEPAGE_DELETE,
+	HUGEPAGE_INVALID
+};
+
+/*
+ * Cycles through hugepage directories and looks for hugepage
+ * files associated with a given prefix. Depending on value of
+ * action, the hugepages are checked if they exist, checked if
+ * they can be locked, or are simply deleted.
+ *
+ * Returns 1 if it finds at least one hugepage matching the action
+ * Returns 0 if no matching hugepages were found
+ * Returns -1 if it encounters an error
+ */
+static int
+process_hugefiles(const char *prefix, enum hugepage_action action)
+{
+	const struct mntent *entry;
+	char hugefile_prefix[PATH_MAX];
+	int result = 0;
+
+	const int prefix_len = snprintf(hugefile_prefix, sizeof(hugefile_prefix), "%smap_", prefix);
+	if (prefix_len <= 0 || prefix_len >= NAME_MAX) {
+		printf("Error (line %d) - cannot create hugefile filename prefix\n", __LINE__);
+		return -1;
+	}
+
+	/* get hugetlbfs mountpoints from /proc/mounts */
+	FILE *mounts = setmntent("/proc/mounts", "r");
+	if (mounts == NULL) {
+		printf("Error (line %d) - cannot parse /proc/mounts!\n", __LINE__);
+		return -1;
+	}
+
+	/* foreach mountpoint */
+	while ((entry = getmntent(mounts)) != NULL) {
+		DIR *hugepage_dir;
+		struct dirent *dirent;
+
+		/* only want hugetlbfs filesystems */
+		if (strcmp(entry->mnt_type, FS_HUGETLB) != 0)
+			continue;
+
+		/* check if directory exists */
+		hugepage_dir = opendir(entry->mnt_dir);
+		if (hugepage_dir == NULL) {
+			endmntent(mounts);
+			printf("Error (line %d) - cannot open %s: %s\n",
+				__LINE__, entry->mnt_dir, strerror(errno));
+			return -1;
+		}
+
+		while ((dirent = readdir(hugepage_dir)) != NULL) {
+			if (memcmp(dirent->d_name, hugefile_prefix, prefix_len) != 0)
+				continue;
+
+			switch (action) {
+			case HUGEPAGE_CHECK_EXISTS:
+				{
+					/* file exists, return */
+					printf("Hugepage file %s/%s exists, matching prefix %s\n",
+						entry->mnt_dir, dirent->d_name, hugefile_prefix);
+					closedir(hugepage_dir);
+					result = 1;
+					goto end;
+				}
+				break;
+			case HUGEPAGE_DELETE:
+				{
+					char file_path[PATH_MAX];
+
+					snprintf(file_path, sizeof(file_path),
+						"%s/%s", entry->mnt_dir, dirent->d_name);
+
+					/* remove file */
+					if (remove(file_path) < 0) {
+						printf("Error (line %d) - cannot delete %s - %s!\n",
+							__LINE__, dirent->d_name, strerror(errno));
+						closedir(hugepage_dir);
+						result = -1;
+						goto end;
+					}
+					printf("Deleted hugepage file %s\n", file_path);
+					result = 1;
+				}
+				break;
+			case HUGEPAGE_CHECK_LOCKED:
+				{
+					int fd;
+
+					/* try and lock the file */
+					fd = openat(dirfd(hugepage_dir), dirent->d_name, O_RDONLY);
+
+					/* this shouldn't happen */
+					if (fd == -1) {
+						printf("Error (line %d) - cannot open %s - %s!\n",
+							__LINE__, dirent->d_name, strerror(errno));
+						closedir(hugepage_dir);
+						result = -1;
+						goto end;
+					}
+
+					/* non-blocking lock */
+					if (flock(fd, LOCK_EX | LOCK_NB) != -1) {
+						result = 0;
+
+						/* unlock the resulting lock */
+						flock(fd, LOCK_UN);
+						close(fd);
+						closedir(hugepage_dir);
+						goto end;
+					}
+					result = 1;
+					printf("Hugepage file %s/%s is locked\n",
+						entry->mnt_dir, dirent->d_name);
+					close(fd);
+				}
+				break;
+				/* shouldn't happen */
+			default:
+				goto end;
+			} /* switch */
+
+		} /* read hugepage directory */
+		closedir(hugepage_dir);
+	} /* read /proc/mounts */
+end:
+	endmntent(mounts);
+	return result;
+}
+
+/*
+ * count the number of "node*" files in /sys/devices/system/node/
+ */
+static int
+get_number_of_sockets(void)
+{
+	struct dirent *dirent = NULL;
+	const char * nodedir = "/sys/devices/system/node/";
+	DIR * dir = NULL;
+	int result = 0;
+
+	/* check if directory exists */
+	if ((dir = opendir(nodedir)) == NULL) {
+		/* if errno==ENOENT this means we don't have NUMA support */
+		if (errno == ENOENT) {
+			printf("No NUMA nodes detected: assuming 1 available socket\n");
+			return 1;
+		}
+		printf("Error (line %d) - cannot open %s: %s\n",
+			__LINE__, nodedir, strerror(errno));
+		return -1;
+	}
+
+	while ((dirent = readdir(dir)) != NULL)
+		if (strncmp(dirent->d_name, "node", sizeof("node") - 1) == 0)
+			result++;
+
+	closedir(dir);
+	return result;
+}
+#endif /* RTE_EXEC_ENV_LINUX */
+
+/*
+ * Test that the app doesn't run with invalid allow option.
+ * Final tests ensures it does run with valid options as sanity check (one
+ * test for with Domain+BDF, second for just with BDF)
+ */
+static int
+test_allow_flag(void)
+{
+	unsigned int i;
+	const char *prefix = file_prefix_arg();
+	if (prefix == NULL)
+		return -1;
+
+	const char *wlinval[][8] = {
+		{prgname, prefix, mp_flag, eal_debug_logs,
+				allow, "error", "", ""},
+		{prgname, prefix, mp_flag, eal_debug_logs,
+				allow, "0:0:0", "", ""},
+		{prgname, prefix, mp_flag, eal_debug_logs,
+				allow, "0:error:0.1", "", ""},
+		{prgname, prefix, mp_flag, eal_debug_logs,
+				allow, "0:0:0.1error", "", ""},
+		{prgname, prefix, mp_flag, eal_debug_logs,
+				allow, "error0:0:0.1", "", ""},
+		{prgname, prefix, mp_flag, eal_debug_logs,
+				allow, "0:0:0.1.2", "", ""},
+	};
+	/* Test with valid allow option */
+	const char *wlval1[] = {prgname, prefix, mp_flag, eal_debug_logs,
+			allow, "00FF:09:0B.3"};
+	const char *wlval2[] = {prgname, prefix, mp_flag, eal_debug_logs,
+			allow, "09:0B.3", allow, "0a:0b.1"};
+	const char *wlval3[] = {prgname, prefix, mp_flag, eal_debug_logs,
+			allow, "09:0B.3,type=test",
+			allow, "08:00.1,type=normal",
+	};
+	const char *wlval4[] = {prgname, prefix, mp_flag, eal_debug_logs,
+			no_auto_probing };
+	const char *wlval5[] = {prgname, prefix, mp_flag, eal_debug_logs,
+			no_auto_probing, allow, "00FF:09:0B.3"};
+	const char *wlval6[] = {prgname, prefix, mp_flag, eal_debug_logs,
+			auto_probing };
+	const char *wlval7[] = {prgname, prefix, mp_flag, eal_debug_logs,
+			auto_probing, allow, "00FF:09:0B.3"};
+
+	for (i = 0; i < RTE_DIM(wlinval); i++) {
+		if (launch_proc(wlinval[i]) == 0) {
+			printf("Error (line %d) - process did run ok with invalid allow parameter\n",
+				__LINE__);
+			return -1;
+		}
+	}
+	if (launch_proc(wlval1) != 0 ) {
+		printf("Error (line %d) - process did not run ok with valid allow\n", __LINE__);
+		return -1;
+	}
+	if (launch_proc(wlval2) != 0 ) {
+		printf("Error (line %d) - process did not run ok with valid allow value set\n",
+			__LINE__);
+		return -1;
+	}
+	if (launch_proc(wlval3) != 0 ) {
+		printf("Error (line %d) - process did not run ok with valid allow + args\n",
+			__LINE__);
+		return -1;
+	}
+	if (launch_proc(wlval4) != 0) {
+		printf("Error (line %d) - process did not run ok with no-auto-probing\n",
+			__LINE__);
+		return -1;
+	}
+	if (launch_proc(wlval5) != 0) {
+		printf("Error (line %d) - process did not run ok with no-auto-probing + allow\n",
+			__LINE__);
+		return -1;
+	}
+	if (launch_proc(wlval6) != 0) {
+		printf("Error (line %d) - process did not run ok with auto-probing\n",
+			__LINE__);
+		return -1;
+	}
+	if (launch_proc(wlval7) != 0) {
+		printf("Error (line %d) - process did not run ok with auto-probing + allow\n",
+			__LINE__);
+		return -1;
+	}
+
+	return 0;
+}
+
+/*
+ * Test that the app doesn't run with invalid blocklist option.
+ * Final test ensures it does run with valid options as sanity check
+ */
+static int
+test_invalid_b_flag(void)
+{
+	const char *prefix = file_prefix_arg();
+	if (prefix == NULL)
+		return -1;
+
+	const char *blinval[][6] = {
+		{prgname, prefix, mp_flag, eal_debug_logs, "-b", "error"},
+		{prgname, prefix, mp_flag, eal_debug_logs, "-b", "0:0:0"},
+		{prgname, prefix, mp_flag, eal_debug_logs, "-b", "0:error:0.1"},
+		{prgname, prefix, mp_flag, eal_debug_logs, "-b", "0:0:0.1error"},
+		{prgname, prefix, mp_flag, eal_debug_logs, "-b", "error0:0:0.1"},
+		{prgname, prefix, mp_flag, eal_debug_logs, "-b", "0:0:0.1.2"},
+	};
+	const char *blinval_probing[] =
+		{prgname, prefix, mp_flag, eal_debug_logs, "-b", "0:0.0", auto_probing};
+	const char *blinval_probing_inval[] =
+		{prgname, prefix, mp_flag, eal_debug_logs, "-b", "0:0.0", no_auto_probing};
+
+	/* Test with valid blocklist option */
+	const char *blval[] = {prgname, prefix, mp_flag, eal_debug_logs,
+			       "-b", "FF:09:0B.3"};
+
+	int i;
+
+	for (i = 0; i != RTE_DIM(blinval); i++) {
+		if (launch_proc(blinval[i]) == 0) {
+			printf("Error (line %d) - process did run ok with invalid blocklist parameter\n",
+				__LINE__);
+			return -1;
+		}
+	}
+	if (launch_proc(blinval_probing) != 0) {
+		printf("Error (line %d) - process did not run ok with blocklist and auto-probing\n",
+			__LINE__);
+		return -1;
+	}
+	if (launch_proc(blinval_probing_inval) == 0) {
+		printf("Error (line %d) - process did run ok with blocklist and no-auto-probing\n",
+			__LINE__);
+		return -1;
+	}
+	if (launch_proc(blval) != 0) {
+		printf("Error (line %d) - process did not run ok with valid blocklist value\n",
+			__LINE__);
+		return -1;
+	}
+	return 0;
+}
+
+/*
+ *  Test that the app doesn't run with invalid vdev option.
+ *  Final test ensures it does run with valid options as sanity check
+ */
+static int
+test_invalid_vdev_flag(void)
+{
+#ifdef RTE_NET_RING
+#ifdef RTE_EXEC_ENV_FREEBSD
+	/* BSD target doesn't support prefixes at this point, and we also need to
+	 * run another primary process here */
+	const char * prefix = no_shconf;
+#else
+	const char * prefix = "--file-prefix=vdev";
+#endif /* !RTE_EXEC_ENV_FREEBSD */
+
+	/* Test with invalid vdev option */
+	const char *vdevinval[] = {prgname, prefix, no_huge, eal_debug_logs,
+				bus_debug_logs, no_pci, vdev, "eth_dummy"};
+
+	/* Test with valid vdev option */
+	const char *vdevval1[] = {prgname, prefix, no_huge, eal_debug_logs,
+				bus_debug_logs, no_pci, vdev, "net_ring0"};
+
+	const char *vdevval2[] = {prgname, prefix, no_huge, eal_debug_logs,
+				bus_debug_logs, no_pci, vdev, "net_ring0,args=test"};
+
+	const char *vdevval3[] = {prgname, prefix, no_huge, eal_debug_logs,
+				bus_debug_logs, no_pci, vdev, "net_ring0,nodeaction=r1:0:CREATE"};
+
+	const char *vdevval4[] = {prgname, prefix, no_huge, eal_debug_logs,
+				bus_debug_logs, no_auto_probing, vdev, "net_ring0"};
+
+	const char *vdevval5[] = {prgname, prefix, no_huge, eal_debug_logs,
+				bus_debug_logs, auto_probing, vdev, "net_ring0"};
+
+	if (launch_proc(vdevinval) == 0) {
+		printf("Error (line %d) - process did run ok with invalid vdev parameter\n",
+			__LINE__);
+		return -1;
+	}
+
+	if (launch_proc(vdevval1) != 0) {
+		printf("Error (line %d) - process did not run ok with valid vdev value\n",
+			__LINE__);
+		return -1;
+	}
+
+	if (launch_proc(vdevval2) != 0) {
+		printf("Error (line %d) - process did not run ok with valid vdev value with dummy args\n",
+			__LINE__);
+		return -1;
+	}
+
+	if (launch_proc(vdevval3) != 0) {
+		printf("Error (line %d) - process did not run ok with valid vdev value with valid args\n",
+			__LINE__);
+		return -1;
+	}
+
+	if (launch_proc(vdevval4) != 0) {
+		printf("Error (line %d) - process did not run ok with valid vdev value and no-auto-probing\n",
+			__LINE__);
+		return -1;
+	}
+
+	if (launch_proc(vdevval5) != 0) {
+		printf("Error (line %d) - process did not run ok with valid vdev value and auto-probing\n",
+			__LINE__);
+		return -1;
+	}
+	return 0;
+#else
+	return TEST_SKIPPED;
+#endif /* !RTE_NET_RING */
+}
+
+/*
+ * Test that the app doesn't run with invalid -r option.
+ */
+static int
+test_invalid_r_flag(void)
+{
+	const char *prefix = file_prefix_arg();
+	if (prefix == NULL)
+		return -1;
+
+	const char *rinval[][6] = {
+			{prgname, prefix, mp_flag, eal_debug_logs, "-r", "error"},
+			{prgname, prefix, mp_flag, eal_debug_logs, "-r", "0"},
+			{prgname, prefix, mp_flag, eal_debug_logs, "-r", "-1"},
+			{prgname, prefix, mp_flag, eal_debug_logs, "-r", "17"},
+	};
+	/* Test with valid blocklist option */
+	const char *rval[] = {prgname, prefix, mp_flag, eal_debug_logs, "-r", "16"};
+
+	int i;
+
+	for (i = 0; i != RTE_DIM(rinval); i++) {
+		if (launch_proc(rinval[i]) == 0) {
+			printf("Error (line %d) - process did run ok with invalid -r (rank) parameter\n",
+				__LINE__);
+			return -1;
+		}
+	}
+	if (launch_proc(rval) != 0) {
+		printf("Error (line %d) - process did not run ok with valid -r (rank) value\n",
+			__LINE__);
+		return -1;
+	}
+	return 0;
+}
+
+/*
+ * Test that the app doesn't run without the coremask/corelist flags. In all cases
+ * should give an error and fail to run
+ */
+static int
+test_missing_c_flag(void)
+{
+	const char *prefix = file_prefix_arg();
+	if (prefix == NULL)
+		return -1;
+
+	/* -c flag but no coremask value */
+	const char *argv1[] = { prgname, prefix, mp_flag, eal_debug_logs, "-c"};
+	/* No -c, -l or --lcores flag at all */
+	const char *argv2[] = { prgname, prefix, mp_flag};
+	/* bad coremask value */
+	const char *argv3[] = { prgname, prefix, mp_flag, eal_debug_logs,
+				"-c", "error" };
+	/* sanity check of tests - valid coremask value */
+	const char *argv4[] = { prgname, prefix, mp_flag, eal_debug_logs,
+				"-c", "1" };
+	/* -l flag but no corelist value */
+	const char *argv5[] = { prgname, prefix, mp_flag, eal_debug_logs,
+				"-l"};
+	const char *argv6[] = { prgname, prefix, mp_flag, eal_debug_logs,
+				"-l", " " };
+	/* bad corelist values */
+	const char *argv7[] = { prgname, prefix, mp_flag, eal_debug_logs,
+				"-l", "error" };
+	const char *argv8[] = { prgname, prefix, mp_flag, eal_debug_logs,
+				"-l", "1-" };
+	const char *argv9[] = { prgname, prefix, mp_flag, eal_debug_logs,
+				"-l", "1," };
+	const char *argv10[] = { prgname, prefix, mp_flag, eal_debug_logs,
+				 "-l", "1#2" };
+	/* core number is negative value */
+	const char * const argv11[] = { prgname, prefix, mp_flag, eal_debug_logs,
+				"-l", "-5" };
+	const char * const argv12[] = { prgname, prefix, mp_flag, eal_debug_logs,
+				"-l", "-5-7" };
+	/* core number is maximum value */
+	const char * const argv13[] = { prgname, prefix, mp_flag, eal_debug_logs,
+				"-l", RTE_STR(RTE_MAX_LCORE) };
+	const char * const argv14[] = { prgname, prefix, mp_flag, eal_debug_logs,
+				"-l", "1-"RTE_STR(RTE_MAX_LCORE) };
+	/* sanity check test - valid corelist value */
+	const char * const argv15[] = { prgname, prefix, mp_flag, eal_debug_logs,
+				 "-l", "1-2,3" };
+
+	/* --lcores flag but no lcores value */
+	const char * const argv16[] = { prgname, prefix, mp_flag, eal_debug_logs,
+				 "--lcores" };
+	const char * const argv17[] = { prgname, prefix, mp_flag, eal_debug_logs,
+				 "--lcores", " " };
+	/* bad lcores value */
+	const char * const argv18[] = { prgname, prefix, mp_flag, eal_debug_logs,
+				 "--lcores", "1-3-5" };
+	const char * const argv19[] = { prgname, prefix, mp_flag, eal_debug_logs,
+				 "--lcores", "0-1,,2" };
+	const char * const argv20[] = { prgname, prefix, mp_flag, eal_debug_logs,
+				 "--lcores", "0-,1" };
+	const char * const argv21[] = { prgname, prefix, mp_flag, eal_debug_logs,
+				 "--lcores", "(0-,2-4)" };
+	const char * const argv22[] = { prgname, prefix, mp_flag, eal_debug_logs,
+				 "--lcores", "(-1,2)" };
+	const char * const argv23[] = { prgname, prefix, mp_flag, eal_debug_logs,
+				 "--lcores", "(2-4)@(2-4-6)" };
+	const char * const argv24[] = { prgname, prefix, mp_flag, eal_debug_logs,
+				 "--lcores", "(a,2)" };
+	const char * const argv25[] = { prgname, prefix, mp_flag, eal_debug_logs,
+				 "--lcores", "1-3@(1,3)" };
+	const char * const argv26[] = { prgname, prefix, mp_flag, eal_debug_logs,
+				 "--lcores", "3@((1,3)" };
+	const char * const argv27[] = { prgname, prefix, mp_flag, eal_debug_logs,
+				 "--lcores", "(4-7)=(1,3)" };
+	const char * const argv28[] = { prgname, prefix, mp_flag, eal_debug_logs,
+				 "--lcores", "[4-7]@(1,3)" };
+	/* sanity check of tests - valid lcores value */
+	const char * const argv29[] = { prgname, prefix, mp_flag, eal_debug_logs,
+				 "--lcores",
+				 "0-1,2@(5-7),(3-5)@(0,2),(0,6),7"};
+	/* check an invalid cpu value >= CPU_SETSIZE */
+	const char * const argv30[] = { prgname, prefix, mp_flag, eal_debug_logs,
+				 "--lcores", "3@" RTE_STR(CPU_SETSIZE) };
+
+	if (launch_proc(argv2) != 0) {
+		printf("Error (line %d) - process did not run ok when missing -c flag\n",
+			__LINE__);
+		return -1;
+	}
+
+	if (launch_proc(argv1) == 0
+			|| launch_proc(argv3) == 0) {
+		printf("Error (line %d) - process ran without error with invalid -c flag\n",
+			__LINE__);
+		return -1;
+	}
+	if (launch_proc(argv4) != 0) {
+		printf("Error (line %d) - process did not run ok with valid coremask value\n",
+			__LINE__);
+		return -1;
+	}
+
+	/* start -l test */
+	if (launch_proc(argv5) == 0
+			|| launch_proc(argv6) == 0
+			|| launch_proc(argv7) == 0
+			|| launch_proc(argv8) == 0
+			|| launch_proc(argv9) == 0
+			|| launch_proc(argv10) == 0
+			|| launch_proc(argv11) == 0
+			|| launch_proc(argv12) == 0
+			|| launch_proc(argv13) == 0
+			|| launch_proc(argv14) == 0) {
+		printf("Error (line %d) - process ran without error with invalid -l flag\n",
+			__LINE__);
+		return -1;
+	}
+	if (rte_lcore_is_enabled(0) && rte_lcore_is_enabled(1) &&
+	    rte_lcore_is_enabled(2) && rte_lcore_is_enabled(3) &&
+	    launch_proc(argv15) != 0) {
+		printf("Error (line %d) - process did not run ok with valid corelist value\n",
+			__LINE__);
+		return -1;
+	}
+
+	/* start --lcores tests */
+	if (launch_proc(argv16) == 0 || launch_proc(argv17) == 0 ||
+	    launch_proc(argv18) == 0 || launch_proc(argv19) == 0 ||
+	    launch_proc(argv20) == 0 || launch_proc(argv21) == 0 ||
+	    launch_proc(argv22) == 0 || launch_proc(argv23) == 0 ||
+	    launch_proc(argv24) == 0 || launch_proc(argv25) == 0 ||
+	    launch_proc(argv26) == 0 || launch_proc(argv27) == 0 ||
+	    launch_proc(argv28) == 0 || launch_proc(argv30) == 0) {
+		printf("Error (line %d) - process ran without error with invalid --lcores flag\n",
+			__LINE__);
+		return -1;
+	}
+
+	if (rte_lcore_is_enabled(0) && rte_lcore_is_enabled(1) &&
+	    rte_lcore_is_enabled(2) && rte_lcore_is_enabled(3) &&
+	    rte_lcore_is_enabled(4) && rte_lcore_is_enabled(5) &&
+	    rte_lcore_is_enabled(6) && rte_lcore_is_enabled(7) &&
+	    launch_proc(argv29) != 0) {
+		printf("Error (line %d) - process did not run ok with valid corelist value\n",
+			__LINE__);
+		return -1;
+	}
+
+	return 0;
+}
+
+/*
+ * Test --main-lcore option with matching coremask
+ */
+static int
+test_main_lcore_flag(void)
+{
+	const char *prefix = file_prefix_arg();
+	if (prefix == NULL)
+		return -1;
+
+	if (!rte_lcore_is_enabled(0) || !rte_lcore_is_enabled(1))
+		return TEST_SKIPPED;
+
+	/* --main-lcore flag but no value */
+	const char *argv1[] = { prgname, prefix, mp_flag, eal_debug_logs,
+				"-c", "3", "--main-lcore"};
+	/* --main-lcore flag with invalid value */
+	const char *argv2[] = { prgname, prefix, mp_flag, eal_debug_logs,
+				"-c", "3", "--main-lcore", "-1"};
+	const char *argv3[] = { prgname, prefix, mp_flag, eal_debug_logs,
+				"-c", "3", "--main-lcore", "X"};
+	/* main lcore not in coremask */
+	const char *argv4[] = { prgname, prefix, mp_flag, eal_debug_logs,
+				"-c", "3", "--main-lcore", "2"};
+	/* valid value */
+	const char *argv5[] = { prgname, prefix, mp_flag, eal_debug_logs,
+				"-c", "3", "--main-lcore", "1"};
+	/* valid value set before coremask */
+	const char *argv6[] = { prgname, prefix, mp_flag, eal_debug_logs,
+				"--main-lcore", "1", "-c", "3"};
+
+	if (launch_proc(argv1) == 0
+			|| launch_proc(argv2) == 0
+			|| launch_proc(argv3) == 0
+			|| launch_proc(argv4) == 0) {
+		printf("Error (line %d) - process ran without error with wrong --main-lcore\n",
+			__LINE__);
+		return -1;
+	}
+	if (launch_proc(argv5) != 0
+			|| launch_proc(argv6) != 0) {
+		printf("Error (line %d) - process did not run ok with valid --main-lcore\n",
+			__LINE__);
+		return -1;
+	}
+	return 0;
+}
+
+/*
+ * Test that the app doesn't run with invalid -n flag option.
+ * Final test ensures it does run with valid options as sanity check
+ * Since -n is not compulsory for MP, we instead use --no-huge and --no-shconf
+ * flags.
+ */
+static int
+test_invalid_n_flag(void)
+{
+	const char *prefix = file_prefix_arg();
+	if (prefix == NULL)
+		return -1;
+
+	/* -n flag but no value */
+	const char *argv1[] = { prgname, prefix, no_huge, no_shconf,
+				"-n"};
+	/* bad numeric value */
+	const char *argv2[] = { prgname, prefix, no_huge, no_shconf,
+				"-n", "e" };
+	/* zero is invalid */
+	const char *argv3[] = { prgname, prefix, no_huge, no_shconf,
+				"-n", "0" };
+	/* sanity test - check with good value */
+	const char *argv4[] = { prgname, prefix, no_huge, no_shconf,
+				"-n", "2" };
+	/* sanity test - check with no -n flag */
+	const char *argv5[] = { prgname, prefix, no_huge, no_shconf};
+
+	if (launch_proc(argv1) == 0
+			|| launch_proc(argv2) == 0
+			|| launch_proc(argv3) == 0) {
+		printf("Error (line %d) - process ran without error when invalid -n flag\n",
+			__LINE__);
+		return -1;
+	}
+	if (launch_proc(argv4) != 0) {
+		printf("Error (line %d) - process did not run ok with valid num-channel value\n",
+			__LINE__);
+		return -1;
+	}
+	if (launch_proc(argv5) != 0) {
+		printf("Error (line %d) - process did not run ok without -n flag\n", __LINE__);
+		return -1;
+	}
+
+	return 0;
+}
+
+/*
+ * Test that the app runs with HPET, and without HPET
+ */
+static int
+test_no_hpet_flag(void)
+{
+#ifdef RTE_EXEC_ENV_FREEBSD
+	return 0;
+#else
+	const char *prefix = file_prefix_arg();
+	if (prefix == NULL) {
+		printf("Error (line %d) - unable to get current prefix!\n", __LINE__);
+		return -1;
+	}
+
+	/* With --no-hpet */
+	const char *argv1[] = {prgname, prefix, mp_flag, eal_debug_logs, no_hpet};
+	/* Without --no-hpet */
+	const char *argv2[] = {prgname, prefix, mp_flag, eal_debug_logs};
+
+	if (launch_proc(argv1) != 0) {
+		printf("Error (line %d) - process did not run ok with --no-hpet flag\n", __LINE__);
+		return -1;
+	}
+	if (launch_proc(argv2) != 0) {
+		printf("Error (line %d) - process did not run ok without --no-hpet flag\n",
+			__LINE__);
+		return -1;
+	}
+	return 0;
+#endif
+}
+
+/*
+ * Test that the app runs with --no-huge and doesn't run when --socket-mem are
+ * specified with --no-huge.
+ */
+static int
+test_no_huge_flag(void)
+{
+#ifdef RTE_EXEC_ENV_FREEBSD
+	/* BSD target doesn't support prefixes at this point, and we also need to
+	 * run another primary process here */
+	const char * prefix = no_shconf;
+#else
+	const char * prefix = "--file-prefix=nohuge";
+#endif
+
+	/* With --no-huge */
+	const char *argv1[] = {prgname, prefix, no_huge};
+	/* With --no-huge and -m */
+	const char *argv2[] = {prgname, prefix, no_huge,
+			"-m", DEFAULT_MEM_SIZE};
+
+	if (launch_proc(argv1) != 0) {
+		printf("Error - process did not run ok with --no-huge flag\n");
+		return -1;
+	}
+	if (launch_proc(argv2) != 0) {
+		printf("Error - process did not run ok with --no-huge and -m flags\n");
+		return -1;
+	}
+#ifndef RTE_EXEC_ENV_FREEBSD
+	/* With --no-huge and --socket-mem */
+	const char *argv3[] = {prgname, prefix, no_huge,
+			"--socket-mem=" DEFAULT_MEM_SIZE};
+	/* With --no-huge, -m and --socket-mem */
+	const char *argv4[] = {prgname, prefix, no_huge,
+			"-m", DEFAULT_MEM_SIZE, "--socket-mem=" DEFAULT_MEM_SIZE};
+
+	/* With --no-huge and --huge-worker-stack (should fail) */
+	const char * const argv5[] = {prgname, prefix, no_huge,
+			"--huge-worker-stack"};
+	/* With --no-huge and --huge-worker-stack=512 (should fail) */
+	const char * const argv6[] = {prgname, prefix, no_huge,
+			"--huge-worker-stack=512"};
+
+	if (launch_proc(argv3) == 0) {
+		printf("Error (line %d) - process run ok with --no-huge and --socket-mem flags\n",
+			__LINE__);
+		return -1;
+	}
+	if (launch_proc(argv4) == 0) {
+		printf("Error (line %d) - process run ok with --no-huge, -m and --socket-mem flags\n",
+			__LINE__);
+		return -1;
+	}
+	if (launch_proc(argv5) == 0) {
+		printf("Error (line %d) - process run ok with --no-huge and --huge-worker-stack flags\n",
+			__LINE__);
+		return -1;
+	}
+	if (launch_proc(argv6) == 0) {
+		printf("Error (line %d) - process run ok with --no-huge and --huge-worker-stack=size flags\n",
+			__LINE__);
+		return -1;
+	}
+#endif /* !RTE_EXEC_ENV_FREEBSD */
+	return 0;
+}
+
+static int
+test_misc_flags(void)
+{
+	const char *hugepath = "";
+	char hugepath_dir[PATH_MAX];
+	char hugepath_dir2[PATH_MAX];
+	char hugepath_dir3[PATH_MAX];
+#ifdef RTE_EXEC_ENV_FREEBSD
+	/* BSD target doesn't support prefixes at this point */
+	const char * prefix = "";
+	const char * nosh_prefix = "";
+#else
+	const char *prefix = file_prefix_arg();
+	const char * nosh_prefix = "--file-prefix=noshconf";
+	struct mntent *entry;
+
+	if (prefix == NULL) {
+		printf("Error (line %d) - unable to get current prefix!\n", __LINE__);
+		return -1;
+	}
+
+	/*
+	 * get first valid hugepage path
+	 */
+
+	/* get hugetlbfs mountpoints from /proc/mounts */
+	FILE *mounts = setmntent("/proc/mounts", "r");
+	if (mounts == NULL) {
+		printf("Error (line %d) - cannot open /proc/mounts!\n", __LINE__);
+		return -1;
+	}
+
+	/* foreach mount point */
+	hugepath = NULL;
+	while ((entry = getmntent(mounts)) != NULL) {
+		/* only want hugetlbfs filesystems */
+		if (strcmp(entry->mnt_type, FS_HUGETLB) == 0) {
+			hugepath = strdupa(entry->mnt_dir);
+			break;
+		}
+	}
+	endmntent(mounts);
+
+	if (hugepath == NULL) {
+		printf("No mounted hugepage dir found!\n");
+		return -1;
+	}
+#endif
+
+	snprintf(hugepath_dir, sizeof(hugepath_dir), "%s/dpdk.missing", hugepath);
+	snprintf(hugepath_dir2, sizeof(hugepath_dir2), "%s/dpdk.dir", hugepath);
+
+	if (mkdir(hugepath_dir2, 0700) != 0 && errno != EEXIST) {
+		printf("Error (line %d) - failed to mkdir(%s)\n", __LINE__, hugepath_dir2);
+		return -1;
+	}
+
+	snprintf(hugepath_dir3, sizeof(hugepath_dir3), "%s/dpdk.dir/sub", hugepath);
+
+	if (mkdir(hugepath_dir3, 0700) != 0 && errno != EEXIST) {
+		printf("Error (line %d) - failed to mkdir(%s)\n", __LINE__, hugepath_dir3);
+		goto fail;
+	}
+
+	/* check that some general flags don't prevent things from working.
+	 * All cases, apart from the first, app should run.
+	 * No further testing of output done.
+	 */
+	/* sanity check - failure with invalid option */
+	const char *argv0[] = {prgname, prefix, mp_flag, eal_debug_logs, "--invalid-opt"};
+
+	/* With --no-pci */
+	const char *argv1[] = {prgname, prefix, mp_flag, eal_debug_logs, "--no-pci"};
+	/* With -v */
+	const char *argv2[] = {prgname, prefix, mp_flag, eal_debug_logs, "-v"};
+	/* With valid --syslog */
+	const char *argv3[] = {prgname, prefix, mp_flag, eal_debug_logs, "--syslog=user"};
+	/* With empty --syslog (now defaults) */
+	const char *argv4[] = {prgname, prefix, mp_flag, eal_debug_logs, "--syslog"};
+	/* With invalid --syslog */
+	const char *argv5[] = {prgname, prefix, mp_flag, eal_debug_logs, "--syslog=invalid"};
+
+	/* With no-sh-conf, also use no-huge to ensure this test runs on BSD */
+	const char *argv6[] = {prgname, eal_debug_logs, no_pci, "-m", DEFAULT_MEM_SIZE,
+			no_shconf, nosh_prefix, no_huge};
+
+	/* With --huge-dir */
+	const char *argv7[] = {prgname, "-m", DEFAULT_MEM_SIZE,
+			eal_debug_logs, no_pci,
+			"--file-prefix=hugedir", "--huge-dir", hugepath};
+	/* With empty --huge-dir (should fail) */
+	const char *argv8[] = {prgname, "-m", DEFAULT_MEM_SIZE,
+			eal_debug_logs, no_pci,
+			"--file-prefix=hugedir", "--huge-dir"};
+	/* With invalid --huge-dir */
+	const char *argv9[] = {prgname, "-m", DEFAULT_MEM_SIZE,
+			eal_debug_logs, no_pci,
+			"--file-prefix=hugedir", "--huge-dir", "invalid"};
+	/* With invalid --huge-dir sub-directory */
+	const char *argv10[] = {prgname, "-m", DEFAULT_MEM_SIZE,
+			eal_debug_logs, no_pci,
+			"--file-prefix=hugedir", "--huge-dir", hugepath_dir};
+	/* With valid --huge-dir sub-directory */
+	const char *argv11[] = {prgname, "-m", DEFAULT_MEM_SIZE,
+			eal_debug_logs, no_pci,
+			"--file-prefix=hugedir", "--huge-dir", hugepath_dir2};
+	/* Secondary process with invalid --huge-dir (should run as flag has no
+	 * effect on secondary processes) */
+	const char *argv12[] = {prgname, prefix, mp_flag, eal_debug_logs,
+			"--huge-dir", "invalid"};
+
+	/* try running with base-virtaddr param */
+	const char *argv13[] = {prgname, "--file-prefix=virtaddr",
+			eal_debug_logs, no_pci,
+			"--base-virtaddr=0x23456789"};
+
+	/* try running with --vfio-intr INTx flag */
+	const char *argv14[] = {prgname, "--file-prefix=intr",
+			eal_debug_logs, no_pci,
+			"--vfio-intr=legacy"};
+
+	/* try running with --vfio-intr MSI flag */
+	const char *argv15[] = {prgname, "--file-prefix=intr",
+			eal_debug_logs, no_pci,
+			"--vfio-intr=msi"};
+
+	/* try running with --vfio-intr MSI-X flag */
+	const char *argv16[] = {prgname, "--file-prefix=intr",
+			eal_debug_logs, no_pci,
+			"--vfio-intr=msix"};
+
+	/* try running with --vfio-intr invalid flag */
+	const char *argv17[] = {prgname, "--file-prefix=intr",
+			eal_debug_logs, no_pci,
+			"--vfio-intr=invalid"};
+
+	/* With process type as auto-detect */
+	const char * const argv18[] = {prgname, "--file-prefix=auto",
+			eal_debug_logs, no_pci,
+			"--proc-type=auto"};
+
+	/* With process type as auto-detect with no-shconf */
+	const char * const argv19[] = {prgname, "--proc-type=auto", eal_debug_logs, no_pci,
+			no_shconf, nosh_prefix, no_huge};
+
+	/* With process type as --create-uio-dev flag */
+	const char * const argv20[] = {prgname, "--file-prefix=uiodev",
+			eal_debug_logs, no_pci,
+			"--create-uio-dev"};
+
+	/* Try running with --huge-worker-stack flag */
+	const char * const argv21[] = {prgname, prefix, mp_flag, eal_debug_logs,
+				       "--huge-worker-stack"};
+
+	/* Try running with --huge-worker-stack=512 flag */
+	const char * const argv22[] = {prgname, prefix, mp_flag, eal_debug_logs,
+				       "--huge-worker-stack=512"};
+
+	/* Try running with --log-timestamp */
+	const char * const argv23[] = {prgname, prefix, mp_flag, eal_debug_logs,
+				       "--log-timestamp" };
+
+	/* Try running with --log-timestamp=iso */
+	const char * const argv24[] = {prgname, prefix, mp_flag, eal_debug_logs,
+				       "--log-timestamp=iso" };
+
+	/* Try running with invalid timestamp */
+	const char * const argv25[] = {prgname, prefix, mp_flag, eal_debug_logs,
+				       "--log-timestamp=invalid" };
+
+	/* Try running with --log-color */
+	const char * const argv26[] = {prgname, prefix, mp_flag, eal_debug_logs,
+				       "--log-color" };
+
+	/* Try running with --log-color=never */
+	const char * const argv27[] = {prgname, prefix, mp_flag, eal_debug_logs,
+				       "--log-color=never" };
+
+	/* Try running with --log-color=invalid */
+	const char * const argv28[] = {prgname, prefix, mp_flag, eal_debug_logs,
+				       "--log-color=invalid" };
+
+	/* run all tests also applicable to FreeBSD first */
+
+	if (launch_proc(argv0) == 0) {
+		printf("Error (line %d) - process ran ok with invalid flag\n", __LINE__);
+		goto fail;
+	}
+	if (launch_proc(argv1) != 0) {
+		printf("Error (line %d) - process did not run ok with --no-pci flag\n", __LINE__);
+		goto fail;
+	}
+	if (launch_proc(argv2) != 0) {
+		printf("Error (line %d) - process did not run ok with -v flag\n", __LINE__);
+		goto fail;
+	}
+	if (launch_proc(argv6) != 0) {
+		printf("Error (line %d) - process did not run ok with --no-shconf flag\n",
+			__LINE__);
+		goto fail;
+	}
+
+#ifdef RTE_EXEC_ENV_FREEBSD
+	/* no more tests to be done on FreeBSD */
+	return 0;
+#endif
+
+	if (launch_proc(argv3) != 0) {
+		printf("Error (line %d) - process did not run ok with --syslog=user flag\n",
+			__LINE__);
+		goto fail;
+	}
+	if (launch_proc(argv4) != 0) {
+		printf("Error (line %d) - process did not run ok with --syslog flag\n", __LINE__);
+		goto fail;
+	}
+	if (launch_proc(argv5) == 0) {
+		printf("Error (line %d) - process run ok with --syslog=invalid flag\n", __LINE__);
+		goto fail;
+	}
+	if (launch_proc(argv7) != 0) {
+		printf("Error (line %d) - process did not run ok with --huge-dir flag\n",
+			__LINE__);
+		goto fail;
+	}
+	if (launch_proc(argv8) == 0) {
+		printf("Error (line %d) - process run ok with empty --huge-dir flag\n", __LINE__);
+		goto fail;
+	}
+	if (launch_proc(argv9) == 0) {
+		printf("Error (line %d) - process run ok with invalid --huge-dir flag\n", __LINE__);
+		goto fail;
+	}
+	if (launch_proc(argv10) == 0) {
+		printf("Error (line %d) - process run ok with invalid --huge-dir sub-dir flag\n",
+			__LINE__);
+		goto fail;
+	}
+	if (launch_proc(argv11) != 0) {
+		printf("Error (line %d) - process did not run ok with --huge-dir subdir flag\n",
+			__LINE__);
+		goto fail;
+	}
+	if (launch_proc(argv12) != 0) {
+		printf("Error (line %d) - secondary process did not run ok with invalid --huge-dir flag\n",
+			__LINE__);
+		goto fail;
+	}
+	if (launch_proc(argv13) != 0) {
+		printf("Error (line %d) - process did not run ok with --base-virtaddr parameter\n",
+			__LINE__);
+		goto fail;
+	}
+	if (launch_proc(argv14) != 0) {
+		printf("Error (line %d) - process did not run ok with --vfio-intr INTx parameter\n",
+			__LINE__);
+		goto fail;
+	}
+	if (launch_proc(argv15) != 0) {
+		printf("Error (line %d) - process did not run ok with --vfio-intr MSI parameter\n",
+			__LINE__);
+		goto fail;
+	}
+	if (launch_proc(argv16) != 0) {
+		printf("Error (line %d) - process did not run ok with --vfio-intr MSI-X parameter\n",
+			__LINE__);
+		goto fail;
+	}
+	if (launch_proc(argv17) == 0) {
+		printf("Error (line %d) - process run ok with --vfio-intr invalid parameter\n",
+			__LINE__);
+		goto fail;
+	}
+	if (launch_proc(argv18) != 0) {
+		printf("Error (line %d) - process did not run ok with --proc-type as auto parameter\n",
+			__LINE__);
+		goto fail;
+	}
+	if (launch_proc(argv19) != 0) {
+		printf("Error (line %d) - process did not run ok with --proc-type and --no-shconf parameter\n",
+			__LINE__);
+		goto fail;
+	}
+	if (launch_proc(argv20) != 0) {
+		printf("Error (line %d) - process did not run ok with --create-uio-dev parameter\n",
+			__LINE__);
+		goto fail;
+	}
+	if (launch_proc(argv21) != 0) {
+		printf("Error (line %d) - process did not run ok with --huge-worker-stack parameter\n",
+			__LINE__);
+		goto fail;
+	}
+	if (launch_proc(argv22) != 0) {
+		printf("Error (line %d) - process did not run ok with --huge-worker-stack=size parameter\n",
+			__LINE__);
+		goto fail;
+	}
+	if (launch_proc(argv23) != 0) {
+		printf("Error (line %d) - process did not run ok with --log-timestamp parameter\n",
+			__LINE__);
+		goto fail;
+	}
+	if (launch_proc(argv24) != 0) {
+		printf("Error (line %d) - process did not run ok with --log-timestamp=iso parameter\n",
+			__LINE__);
+		goto fail;
+	}
+	if (launch_proc(argv25) == 0) {
+		printf("Error (line %d) - process did run ok with --log-timestamp=invalid parameter\n",
+			__LINE__);
+		goto fail;
+	}
+	if (launch_proc(argv26) != 0) {
+		printf("Error (line %d) - process did not run ok with --log-color parameter\n",
+			__LINE__);
+		goto fail;
+	}
+	if (launch_proc(argv27) != 0) {
+		printf("Error (line %d) - process did not run ok with --log-color=never parameter\n",
+			__LINE__);
+		goto fail;
+	}
+	if (launch_proc(argv28) == 0) {
+		printf("Error (line %d) - process did run ok with --log-timestamp=invalid parameter\n",
+			__LINE__);
+		goto fail;
+	}
+
+	rmdir(hugepath_dir3);
+	rmdir(hugepath_dir2);
+	return 0;
+
+fail:
+	rmdir(hugepath_dir3);
+	rmdir(hugepath_dir2);
+	return -1;
+}
+
+#ifdef RTE_EXEC_ENV_FREEBSD
+
+static int
+test_file_prefix(void)
+{
+	printf("file_prefix not supported on FreeBSD, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+#else
+
+static int
+test_file_prefix(void)
+{
+	/*
+	 * 1. check if current process hugefiles are locked
+	 * 2. try to run secondary process without a corresponding primary process
+	 * (while failing to run, it will also remove any unused hugepage files)
+	 * 3. check if current process hugefiles are still in place and are locked
+	 * 4. run a primary process with memtest1 prefix in default and legacy
+	 *    mem mode
+	 * 5. check if memtest1 hugefiles are created in case of legacy mem
+	 *    mode, and deleted in case of default mem mode
+	 * 6. run a primary process with memtest2 prefix in default and legacy
+	 *    mem modes
+	 * 7. check that memtest2 hugefiles are present in the hugedir after a
+	 *    run in legacy mode, and not present at all after run in default
+	 *    mem mode
+	 */
+	char prefix[PATH_MAX];
+
+	if (get_current_prefix(prefix, sizeof(prefix)) == NULL) {
+		printf("Error (line %d) - unable to get current prefix!\n", __LINE__);
+		return -1;
+	}
+
+	/* this should fail unless the test itself is run with "memtest" prefix */
+	const char *argv0[] = {prgname, mp_flag, eal_debug_logs, "-m",
+			DEFAULT_MEM_SIZE, "--file-prefix=" memtest };
+
+	/* primary process with memtest1 and default mem mode */
+	const char *argv1[] = {prgname, eal_debug_logs, no_pci, "-m",
+			DEFAULT_MEM_SIZE, "--file-prefix=" memtest1 };
+
+	/* primary process with memtest1 and legacy mem mode */
+	const char *argv2[] = {prgname, eal_debug_logs, no_pci, "-m",
+			DEFAULT_MEM_SIZE, "--file-prefix=" memtest1,
+			"--legacy-mem" };
+
+	/* primary process with memtest2 and legacy mem mode */
+	const char *argv3[] = {prgname, eal_debug_logs, no_pci, "-m",
+			DEFAULT_MEM_SIZE, "--file-prefix=" memtest2,
+			"--legacy-mem" };
+
+	/* primary process with memtest2 and default mem mode */
+	const char *argv4[] = {prgname, eal_debug_logs, no_pci, "-m",
+			DEFAULT_MEM_SIZE, "--file-prefix=" memtest2 };
+
+	/* primary process with --in-memory mode */
+	const char * const argv5[] = {prgname, eal_debug_logs, no_pci, "-m",
+		DEFAULT_MEM_SIZE, "--in-memory" };
+
+	/* primary process with memtest1 and --in-memory mode */
+	const char * const argv6[] = {prgname, eal_debug_logs, no_pci, "-m",
+		DEFAULT_MEM_SIZE, "--in-memory",
+		"--file-prefix=" memtest1 };
+
+	/* primary process with parent file-prefix and --in-memory mode */
+	const char * const argv7[] = {prgname, eal_debug_logs, no_pci, "-m",
+		DEFAULT_MEM_SIZE, "--in-memory", "--file-prefix", prefix };
+
+	/* primary process with memtest1 and --single-file-segments mode */
+	const char * const argv8[] = {prgname, eal_debug_logs, no_pci, "-m",
+		DEFAULT_MEM_SIZE, "--single-file-segments",
+		"--file-prefix=" memtest1 };
+
+	/* primary process with memtest1 and --huge-unlink=never mode */
+	const char * const argv9[] = {prgname, eal_debug_logs, no_pci, "-m",
+		DEFAULT_MEM_SIZE, "--huge-unlink=never",
+		"--file-prefix=" memtest1 };
+
+	/* check if files for current prefix are present */
+	if (process_hugefiles(prefix, HUGEPAGE_CHECK_EXISTS) != 1) {
+		printf("Error (line %d) - hugepage files for %s were not created!\n",
+			__LINE__, prefix);
+		return -1;
+	}
+
+	/* checks if files for current prefix are locked */
+	if (process_hugefiles(prefix, HUGEPAGE_CHECK_LOCKED) != 1) {
+		printf("Error (line %d) - hugepages for current process aren't locked!\n",
+			__LINE__);
+		return -1;
+	}
+
+	/* check if files for secondary process are present */
+	if (process_hugefiles(memtest, HUGEPAGE_CHECK_EXISTS) == 1) {
+		/* check if they are not locked */
+		if (process_hugefiles(memtest, HUGEPAGE_CHECK_LOCKED) == 1) {
+			printf("Error (line %d) - hugepages for current process are locked!\n",
+				__LINE__);
+			return -1;
+		}
+		/* they aren't locked, delete them */
+		else {
+			if (process_hugefiles(memtest, HUGEPAGE_DELETE) != 1) {
+				printf("Error (line %d) - deleting hugepages failed!\n",
+					__LINE__);
+				return -1;
+			}
+		}
+	}
+
+	if (launch_proc(argv0) == 0) {
+		printf("Error (line %d) - secondary process ran ok without primary process\n",
+			__LINE__);
+		return -1;
+	}
+
+	/* check if files for current prefix are present */
+	if (process_hugefiles(prefix, HUGEPAGE_CHECK_EXISTS) != 1) {
+		printf("Error (line %d) - hugepage files for %s were not created!\n",
+			__LINE__, prefix);
+		return -1;
+	}
+
+	/* checks if files for current prefix are locked */
+	if (process_hugefiles(prefix, HUGEPAGE_CHECK_LOCKED) != 1) {
+		printf("Error (line %d) - hugepages for current process aren't locked!\n",
+			__LINE__);
+		return -1;
+	}
+
+	/* we're running this process in default memory mode, which means it
+	 * should clean up after itself on exit and leave no hugepages behind.
+	 */
+	if (launch_proc(argv1) != 0) {
+		printf("Error (line %d) - failed to run with --file-prefix=%s\n",
+			__LINE__, memtest1);
+		return -1;
+	}
+
+	/* check if memtest1_map0 is present */
+	if (process_hugefiles(memtest1, HUGEPAGE_CHECK_EXISTS) != 0) {
+		printf("Error (line %d) - hugepage files for %s were not deleted!\n",
+			__LINE__, memtest1);
+		return -1;
+	}
+
+	/* now, we're running a process under the same prefix, but with legacy
+	 * mem mode - this should leave behind hugepage files.
+	 */
+	if (launch_proc(argv2) != 0) {
+		printf("Error (line %d) - failed to run with --file-prefix=%s\n",
+			__LINE__, memtest1);
+		return -1;
+	}
+
+	/* check if memtest1_map0 is present */
+	if (process_hugefiles(memtest1, HUGEPAGE_CHECK_EXISTS) != 1) {
+		printf("Error (line %d) - hugepage files for %s were not created!\n",
+			__LINE__, memtest1);
+		return -1;
+	}
+
+	if (launch_proc(argv3) != 0) {
+		printf("Error (line %d) - failed to run with --file-prefix=%s\n",
+			__LINE__, memtest2);
+		return -1;
+	}
+
+	/* check if hugefiles for memtest2 are present */
+	if (process_hugefiles(memtest2, HUGEPAGE_CHECK_EXISTS) != 1) {
+		printf("Error (line %d) - hugepage files for %s were not created!\n",
+			__LINE__, memtest2);
+		return -1;
+	}
+
+	/* check if hugefiles for memtest1 are present */
+	if (process_hugefiles(memtest1, HUGEPAGE_CHECK_EXISTS) != 0) {
+		printf("Error (line %d) - hugepage files for %s were not deleted!\n",
+			__LINE__, memtest1);
+		return -1;
+	}
+
+	/* this process will run in default mem mode, so it should not leave any
+	 * hugepage files behind.
+	 */
+	if (launch_proc(argv4) != 0) {
+		printf("Error (line %d) - failed to run with --file-prefix=%s\n",
+			__LINE__, memtest2);
+		return -1;
+	}
+
+	/* check if hugefiles for memtest2 are present */
+	if (process_hugefiles(memtest2, HUGEPAGE_CHECK_EXISTS) != 0) {
+		printf("Error (line %d) - hugepage files for %s were not deleted!\n",
+			__LINE__, memtest2);
+		return -1;
+	}
+
+	/* check if hugefiles for memtest1 are present */
+	if (process_hugefiles(memtest1, HUGEPAGE_CHECK_EXISTS) != 0) {
+		printf("Error (line %d) - hugepage files for %s were not deleted!\n",
+			__LINE__, memtest1);
+		return -1;
+	}
+
+	/* this process will run in --in-memory mode, so it should not leave any
+	 * hugepage files behind.
+	 */
+
+	/* test case to check eal-options with --in-memory mode */
+	if (launch_proc(argv5) != 0) {
+		printf("Error (line %d) - failed to run with --in-memory mode\n",
+			__LINE__);
+		return -1;
+	}
+
+	/*test case to check eal-options with --in-memory mode with
+	 * custom file-prefix.
+	 */
+	if (launch_proc(argv6) != 0) {
+		printf("Error (line %d) - failed to run with --in-memory mode\n", __LINE__);
+		return -1;
+	}
+
+	/* check if hugefiles for memtest1 are present */
+	if (process_hugefiles(memtest1, HUGEPAGE_CHECK_EXISTS) != 0) {
+		printf("Error (line %d) - hugepage files for %s were created and not deleted!\n",
+			__LINE__, memtest1);
+		return -1;
+	}
+
+	/* test case to check eal-options with --in-memory mode with
+	 * parent file-prefix.
+	 */
+	if (launch_proc(argv7) != 0) {
+		printf("Error (line %d) - failed to run with --file-prefix=%s\n", __LINE__, prefix);
+		return -1;
+	}
+
+	/* this process will run in --single-file-segments mode,
+	 * so it should not leave any hugepage files behind.
+	 */
+	if (launch_proc(argv8) != 0) {
+		printf("Error (line %d) - failed to run with --single-file-segments mode\n",
+			__LINE__);
+		return -1;
+	}
+
+	/* check if hugefiles for memtest1 are present */
+	if (process_hugefiles(memtest1, HUGEPAGE_CHECK_EXISTS) != 0) {
+		printf("Error (line %d) - hugepage files for %s were not deleted!\n",
+			__LINE__, memtest1);
+		return -1;
+	}
+
+	/* this process will run with --huge-unlink,
+	 * so it should not remove hugepage files when it exits
+	 */
+	if (launch_proc(argv9) != 0) {
+		printf("Error (line %d) - failed to run with --huge-unlink=never\n", __LINE__);
+		return -1;
+	}
+
+	/* check if hugefiles for memtest1 are present */
+	if (process_hugefiles(memtest1, HUGEPAGE_CHECK_EXISTS) == 0) {
+		printf("Error (line %d) - hugepage files for %s were deleted!\n",
+			__LINE__, memtest1);
+		return -1;
+	}
+	if (process_hugefiles(memtest1, HUGEPAGE_DELETE) != 1) {
+		printf("Error (line %d) - deleting hugepages failed!\n", __LINE__);
+		return -1;
+	}
+
+	return 0;
+}
+#endif
+
+/* This function writes in passed buf pointer a valid --socket-mem= option
+ * for num_sockets then concatenates the provided suffix string.
+ *
+ * Example for num_sockets 4, mem "2", suffix "plop"
+ * --socket-mem=2,2,2,2plop
+ */
+static void
+populate_socket_mem_param(int num_sockets, const char *mem,
+		const char *suffix, char *buf, size_t buf_size)
+{
+	unsigned int offset = 0;
+	int written;
+	int i;
+
+	written = snprintf(&buf[offset], buf_size - offset, "--socket-mem=");
+	if (written < 0 || written + offset >= buf_size)
+		return;
+	offset += written;
+
+	for (i = 0; i < num_sockets - 1; i++) {
+		written = snprintf(&buf[offset], buf_size - offset,
+			"%s,", mem);
+		if (written < 0 || written + offset >= buf_size)
+			return;
+		offset += written;
+	}
+
+	written = snprintf(&buf[offset], buf_size - offset, "%s%s", mem,
+		suffix);
+	if (written < 0 || written + offset >= buf_size)
+		return;
+	offset += written;
+}
+
+/*
+ * Tests for correct handling of -m and --socket-mem flags
+ */
+static int
+test_memory_flags(void)
+{
+	const char *prefix = file_prefix_arg();
+	if (prefix == NULL) {
+		printf("Error (line %d) - unable to get current prefix!\n", __LINE__);
+		return -1;
+	}
+
+	/* valid -m flag and mp flag */
+	const char *argv0[] = {prgname, prefix, mp_flag, eal_debug_logs,
+			"-m", DEFAULT_MEM_SIZE};
+
+	/* valid -m flag */
+	const char *argv1[] = {prgname, eal_debug_logs, no_pci,
+			"--file-prefix=" memtest, "-m", DEFAULT_MEM_SIZE};
+
+	/* valid (zero) --socket-mem flag */
+	char arg2_socket_mem[SOCKET_MEM_STRLEN];
+	const char *argv2[] = {prgname, eal_debug_logs, no_pci,
+			"--file-prefix=" memtest, arg2_socket_mem};
+
+	/* invalid (incomplete) --socket-mem flag */
+	char arg3_socket_mem[SOCKET_MEM_STRLEN];
+	const char *argv3[] = {prgname, eal_debug_logs, no_pci,
+			"--file-prefix=" memtest, arg3_socket_mem};
+
+	/* invalid (mixed with invalid data) --socket-mem flag */
+	char arg4_socket_mem[SOCKET_MEM_STRLEN];
+	const char *argv4[] = {prgname, eal_debug_logs, no_pci,
+			"--file-prefix=" memtest, arg4_socket_mem};
+
+	/* invalid (with numeric value as last character) --socket-mem flag */
+	char arg5_socket_mem[SOCKET_MEM_STRLEN];
+	const char *argv5[] = {prgname, eal_debug_logs, no_pci,
+			"--file-prefix=" memtest, arg5_socket_mem};
+
+	/* invalid (with empty socket) --socket-mem flag */
+	char arg6_socket_mem[SOCKET_MEM_STRLEN];
+	const char *argv6[] = {prgname, eal_debug_logs, no_pci,
+			"--file-prefix=" memtest, arg6_socket_mem};
+
+	/* invalid (null) --socket-mem flag */
+	const char *argv7[] = {prgname, eal_debug_logs, no_pci,
+			"--file-prefix=" memtest, "--socket-mem="};
+
+	/* valid --socket-mem specified together with -m flag */
+	char arg8_socket_mem[SOCKET_MEM_STRLEN];
+	const char *argv8[] = {prgname, eal_debug_logs, no_pci,
+			"--file-prefix=" memtest, "-m", DEFAULT_MEM_SIZE,
+			arg8_socket_mem};
+
+#ifdef RTE_EXEC_ENV_FREEBSD
+	int num_sockets = 1;
+#else
+	int num_sockets = RTE_MIN(get_number_of_sockets(),
+			RTE_MAX_NUMA_NODES);
+#endif
+
+	if (num_sockets <= 0) {
+		printf("Error (line %d) - cannot get number of sockets!\n", __LINE__);
+		return -1;
+	}
+
+	/* invalid --socket-mem flag (with extra socket) */
+	char invalid_socket_mem[SOCKET_MEM_STRLEN];
+	const char *argv9[] = {prgname, eal_debug_logs, no_pci,
+			"--file-prefix=" memtest, invalid_socket_mem};
+
+	/* valid --socket-mem flag */
+	char valid_socket_mem[SOCKET_MEM_STRLEN];
+	const char *argv10[] = {prgname, eal_debug_logs, no_pci,
+			"--file-prefix=" memtest, valid_socket_mem};
+
+	if (launch_proc(argv0) != 0) {
+		printf("Error (line %d) - secondary process failed with valid -m flag !\n",
+			__LINE__);
+		return -1;
+	}
+
+#ifdef RTE_EXEC_ENV_FREEBSD
+	/* no other tests are applicable to BSD */
+	return 0;
+#endif
+
+	if (launch_proc(argv1) != 0) {
+		printf("Error (line %d) - process failed with valid -m flag!\n", __LINE__);
+		return -1;
+	}
+
+	populate_socket_mem_param(num_sockets, "0", "",
+		arg2_socket_mem, sizeof(arg2_socket_mem));
+	if (launch_proc(argv2) != 0) {
+		printf("Error (line %d) - process failed with valid (zero) --socket-mem!\n",
+			__LINE__);
+		return -1;
+	}
+
+	if (num_sockets > 1) {
+		populate_socket_mem_param(num_sockets - 1, "2", ",",
+			arg3_socket_mem, sizeof(arg3_socket_mem));
+		if (launch_proc(argv3) == 0) {
+			printf("Error (line %d) - process run ok with invalid (incomplete) --socket-mem!\n",
+				__LINE__);
+			return -1;
+		}
+
+		populate_socket_mem_param(num_sockets - 1, "2", ",Fred",
+			arg4_socket_mem, sizeof(arg4_socket_mem));
+		if (launch_proc(argv4) == 0) {
+			printf("Error (line %d) - process run ok with invalid (mixed with invalid input) --socket-mem!\n",
+				__LINE__);
+			return -1;
+		}
+
+		populate_socket_mem_param(num_sockets - 1, "2", ",Fred0",
+			arg5_socket_mem, sizeof(arg5_socket_mem));
+		if (launch_proc(argv5) == 0) {
+			printf("Error (line %d) - process run ok with invalid (mixed with invalid input with a numeric value as last character) --socket-mem!\n",
+				__LINE__);
+			return -1;
+		}
+	}
+
+	if (num_sockets > 2) {
+		populate_socket_mem_param(num_sockets - 2, "2", ",,2",
+			arg6_socket_mem, sizeof(arg6_socket_mem));
+		if (launch_proc(argv6) == 0) {
+			printf("Error (line %d) - process run ok with invalid (with empty socket) --socket-mem!\n",
+				__LINE__);
+			return -1;
+		}
+	}
+
+	if (launch_proc(argv7) == 0) {
+		printf("Error (line %d) - process run ok with invalid (null) --socket-mem!\n",
+			__LINE__);
+		return -1;
+	}
+
+	populate_socket_mem_param(num_sockets, "2", "",
+		arg8_socket_mem, sizeof(arg8_socket_mem));
+	if (launch_proc(argv8) == 0) {
+		printf("Error (line %d) - process run ok with --socket-mem and -m specified!\n",
+			__LINE__);
+		return -1;
+	}
+
+	populate_socket_mem_param(num_sockets + 1, "2", "",
+		invalid_socket_mem, sizeof(invalid_socket_mem));
+	if (launch_proc(argv9) == 0) {
+		printf("Error (line %d) - process run ok with extra socket in --socket-mem!\n",
+			__LINE__);
+		return -1;
+	}
+
+	populate_socket_mem_param(num_sockets, "2", "",
+		valid_socket_mem, sizeof(valid_socket_mem));
+	if (launch_proc(argv10) != 0) {
+		printf("Error (line %d) - process failed with valid --socket-mem!\n", __LINE__);
+		return -1;
+	}
+
+	return 0;
+}
+
+#endif /* !RTE_EXEC_ENV_WINDOWS */
+
+REGISTER_FAST_TEST(eal_flags_c_opt_autotest, NOHUGE_SKIP, ASAN_SKIP, test_missing_c_flag);
+REGISTER_FAST_TEST(eal_flags_main_opt_autotest, NOHUGE_SKIP, ASAN_SKIP, test_main_lcore_flag);
+REGISTER_FAST_TEST(eal_flags_n_opt_autotest, NOHUGE_SKIP, ASAN_SKIP, test_invalid_n_flag);
+REGISTER_FAST_TEST(eal_flags_hpet_autotest, NOHUGE_SKIP, ASAN_SKIP, test_no_hpet_flag);
+REGISTER_FAST_TEST(eal_flags_no_huge_autotest, NOHUGE_SKIP, ASAN_SKIP, test_no_huge_flag);
+REGISTER_FAST_TEST(eal_flags_a_opt_autotest, NOHUGE_SKIP, ASAN_SKIP, test_allow_flag);
+REGISTER_FAST_TEST(eal_flags_b_opt_autotest, NOHUGE_SKIP, ASAN_SKIP, test_invalid_b_flag);
+REGISTER_FAST_TEST(eal_flags_vdev_opt_autotest, NOHUGE_SKIP, ASAN_SKIP, test_invalid_vdev_flag);
+REGISTER_FAST_TEST(eal_flags_r_opt_autotest, NOHUGE_SKIP, ASAN_SKIP, test_invalid_r_flag);
+REGISTER_FAST_TEST(eal_flags_mem_autotest, NOHUGE_SKIP, ASAN_SKIP, test_memory_flags);
+REGISTER_FAST_TEST(eal_flags_file_prefix_autotest, NOHUGE_SKIP, ASAN_SKIP, test_file_prefix);
+REGISTER_FAST_TEST(eal_flags_misc_autotest, NOHUGE_SKIP, ASAN_SKIP, test_misc_flags);
