@@ -45,8 +45,11 @@ Stresser is a modular, high‑performance network stress testing framework with 
 git clone https://github.com/kaxm23/stresser.git
 cd stresser
 ```
-
+### 2- install DPDK 
+```
+git clone https://github.com/DPDK/dpdk.git
 ### 2. Create a Virtual Environment (Recommended)
+```
 ```
 python3 -m venv venv
 source venv/bin/activate
